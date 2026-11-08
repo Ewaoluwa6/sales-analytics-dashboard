@@ -49,6 +49,9 @@
   const elements = {
     currencySelect: document.getElementById('currencySelect'),
     dateRangeFilter: document.getElementById('dateRangeFilter'),
+    customDateRangeInputs: document.getElementById('customDateRangeInputs'),
+    customStartDate: document.getElementById('customStartDate'),
+    customEndDate: document.getElementById('customEndDate'),
     btnOpenAddModal: document.getElementById('btnOpenAddModal'),
     btnExportCSV: document.getElementById('btnExportCSV'),
     btnResetData: document.getElementById('btnResetData'),
@@ -61,6 +64,8 @@
     kpiAOV: document.getElementById('kpiAOV'),
     kpiProfit: document.getElementById('kpiProfit'),
     kpiMargin: document.getElementById('kpiMargin'),
+    kpiTargetLabel: document.getElementById('kpiTargetLabel'),
+    btnEditTarget: document.getElementById('btnEditTarget'),
     kpiTargetPercent: document.getElementById('kpiTargetPercent'),
     kpiTargetProgressBar: document.getElementById('kpiTargetProgressBar'),
     kpiTargetRemaining: document.getElementById('kpiTargetRemaining'),
@@ -136,6 +141,11 @@
       if (storedTimeframe) {
         state.timeframe = storedTimeframe;
       }
+
+      const storedTarget = localStorage.getItem(STORAGE_KEY_TARGET);
+      if (storedTarget) {
+        state.targetQuota = Number(storedTarget) || 150000;
+      }
     } catch (e) {
       console.warn('LocalStorage access issue, fallback to memory', e);
       state.transactions = generateDefaultTransactions();
@@ -147,6 +157,7 @@
       localStorage.setItem(STORAGE_KEY_TRANSACTIONS, JSON.stringify(state.transactions));
       localStorage.setItem(STORAGE_KEY_CURRENCY, state.currency);
       localStorage.setItem(STORAGE_KEY_TIMEFRAME, state.timeframe);
+      localStorage.setItem(STORAGE_KEY_TARGET, state.targetQuota);
     } catch (e) {
       console.error('Failed to save to localStorage', e);
     }
@@ -223,6 +234,12 @@
       return txDate.getFullYear() === now.getFullYear();
     }
 
+    if (timeframe === 'custom') {
+      if (state.customStart && dateStr < state.customStart) return false;
+      if (state.customEnd && dateStr > state.customEnd) return false;
+      return true;
+    }
+
     return true;
   }
 
@@ -284,12 +301,15 @@
     const marginPct = totalRevenue > 0 ? ((grossProfit / totalRevenue) * 100).toFixed(1) : '0.0';
     const aov = completedOrders > 0 ? totalRevenue / completedOrders : 0;
 
-    // Monthly Target calculation
-    const monthlyTargetUSD = 150000;
-    const targetAchievedPct = Math.min(100, Math.round((totalRevenue / monthlyTargetUSD) * 100));
-    const targetRemaining = Math.max(0, monthlyTargetUSD - totalRevenue);
+    // Target quota calculation
+    const quota = state.targetQuota || 150000;
+    const targetAchievedPct = Math.min(100, Math.round((totalRevenue / quota) * 100));
+    const targetRemaining = Math.max(0, quota - totalRevenue);
 
     // Update DOM
+    if (elements.kpiTargetLabel) {
+      elements.kpiTargetLabel.textContent = formatMoney(quota);
+    }
     elements.kpiRevenue.textContent = formatMoney(totalRevenue);
     elements.kpiOrders.textContent = (completedOrders + pendingOrders).toLocaleString();
     elements.kpiPaidCount.textContent = completedOrders.toLocaleString();
@@ -726,7 +746,7 @@
           <td>${escapeHTML(item.rep)}</td>
           <td>${escapeHTML(item.date)}</td>
           <td class="text-right"><strong>${formatMoney(item.amount)}</strong></td>
-          <td><span class="badge-status ${statusClass}">${escapeHTML(item.status)}</span></td>
+          <td><span class="badge-status ${statusClass} clickable-badge" data-status-id="${item.id}" title="Click to cycle status: Completed ➔ Pending ➔ Refunded">${escapeHTML(item.status)}</span></td>
           <td class="text-center">
             <button class="action-btn-delete" data-id="${item.id}" title="Delete record">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -755,6 +775,24 @@
         e.stopPropagation();
         const idToDelete = btn.getAttribute('data-id');
         deleteTransaction(idToDelete);
+      });
+    });
+
+    // Attach status toggle listeners
+    const statusBadges = elements.transactionTableBody.querySelectorAll('.clickable-badge');
+    statusBadges.forEach(badge => {
+      badge.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = badge.getAttribute('data-status-id');
+        const tx = state.transactions.find(t => t.id === id);
+        if (tx) {
+          if (tx.status === 'Completed') tx.status = 'Pending';
+          else if (tx.status === 'Pending') tx.status = 'Refunded';
+          else tx.status = 'Completed';
+          saveToStorage();
+          renderAll();
+          showToast(`Invoice ${id} updated to ${tx.status}`, 'info');
+        }
       });
     });
   }
@@ -917,12 +955,55 @@
 
     // Timeframe Filter
     elements.dateRangeFilter.value = state.timeframe;
+    const updateCustomDateInputsVisibility = () => {
+      if (elements.customDateRangeInputs) {
+        elements.customDateRangeInputs.style.display = state.timeframe === 'custom' ? 'flex' : 'none';
+      }
+    };
+    updateCustomDateInputsVisibility();
+
     elements.dateRangeFilter.addEventListener('change', (e) => {
       state.timeframe = e.target.value;
+      updateCustomDateInputsVisibility();
       state.currentPage = 1;
       saveToStorage();
       renderAll();
     });
+
+    if (elements.customStartDate) {
+      elements.customStartDate.addEventListener('change', (e) => {
+        state.customStart = e.target.value;
+        state.currentPage = 1;
+        renderAll();
+      });
+    }
+
+    if (elements.customEndDate) {
+      elements.customEndDate.addEventListener('change', (e) => {
+        state.customEnd = e.target.value;
+        state.currentPage = 1;
+        renderAll();
+      });
+    }
+
+    // Editable Sales Target Quota
+    if (elements.btnEditTarget) {
+      elements.btnEditTarget.addEventListener('click', () => {
+        const currentTargetUSD = state.targetQuota || 150000;
+        const input = prompt('Enter your new sales target amount ($ USD):', currentTargetUSD);
+        if (input !== null) {
+          const parsed = parseFloat(input.replace(/[^0-9.]/g, ''));
+          if (!isNaN(parsed) && parsed > 0) {
+            state.targetQuota = Math.round(parsed);
+            saveToStorage();
+            renderKPIs();
+            showToast(`Target goal updated to ${formatMoney(state.targetQuota)}!`);
+          } else {
+            alert('Please enter a valid positive number for the target quota.');
+          }
+        }
+      });
+    }
 
     // Modal Events
     elements.btnOpenAddModal.addEventListener('click', openAddModal);
